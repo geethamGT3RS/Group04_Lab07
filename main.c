@@ -1,99 +1,106 @@
+#include "tm4c123gh6pm_header.h"
 #include <stdint.h>
-#include "tm4c123gh6pm.h"
-
-#define RED_LED     0x02    // PF1
-#define BLUE_LED    0x04    // PF2
-#define GREEN_LED   0x08    // PF3
-
-#define SW1         0x10    // PF4
-#define SW2         0x01    // PF0
-
-void delayMs(int n);
-
-void initGPIO(void) {
-    // Enable the clock for Port F
-    SYSCTL_RCGCGPIO_R |= 0x20;
-    while ((SYSCTL_PRGPIO_R & 0x20) == 0) {} // Allow clock to stabilize
-
-    // Unlock Port F for PF0 (SW2) to modify its settings
-    GPIO_PORTF_LOCK_R = 0x4C4F434B;
-    GPIO_PORTF_CR_R = 0x1F;  // Allow changes to PF4-0
-
-    // Configure PF1, PF2, PF3 as outputs for the LEDs
-    GPIO_PORTF_DIR_R |= RED_LED | BLUE_LED | GREEN_LED;
-    GPIO_PORTF_DEN_R |= RED_LED | BLUE_LED | GREEN_LED;
-
-    // Configure PF4 (SW1) and PF0 (SW2) as inputs with pull-up resistors
-    GPIO_PORTF_DIR_R &= ~(SW1 | SW2);
-    GPIO_PORTF_DEN_R |= SW1 | SW2;
-    GPIO_PORTF_PUR_R |= SW1 | SW2;
-}
-
-void initUART1(void) {
-    // Enable the clock for UART1 and Port B
-    SYSCTL_RCGCUART_R |= 0x02;
-    SYSCTL_RCGCGPIO_R |= 0x02;
-    while ((SYSCTL_PRGPIO_R & 0x02) == 0) {} // Allow clock to stabilize
-
-    // Configure PB0 (RX) and PB1 (TX) for UART1
-    GPIO_PORTB_AFSEL_R |= 0x03;   // Enable alt function on PB0, PB1
-    GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R & 0xFFFFFF00) | 0x00000011; // Set PB0, PB1 as UART1
-    GPIO_PORTB_DEN_R |= 0x03;     // Digital enable for PB0, PB1
-
-    // Configure UART1 for 9600 baud, 8-bit data, odd parity, 1 stop bit
-    UART1_CTL_R &= ~0x01;         // Disable UART1
-    UART1_IBRD_R = 104;           // Integer part of baud rate divisor
-    UART1_FBRD_R = 11;            // Fractional part of baud rate divisor
-    UART1_LCRH_R = 0x7A;          // 8-bit, odd parity, 1 stop bit
-    UART1_CTL_R |= 0x301;         // Enable UART1, TX, and RX
-}
-
-void UART1_Send(uint8_t data) {
-    while (UART1_FR_R & 0x20) {}
-    UART1_DR_R = data;
-}
-
-uint8_t UART1_Receive(void) {
-    while (UART1_FR_R & 0x10) {}
-    if (UART1_RSR_R & 0x0F) {
-        UART1_ECR_R = 0x0F;
-        return 0xFF;
+#include <stdlib.h>
+volatile int check = 0;
+volatile int start = 0;
+void Delay(unsigned long counter);
+int UART5_Receiver(void);
+void UART5_Transmitter(int data);
+void GPIO_INT_HANDLER(void)
+{
+    int sw1, sw2;
+    int temp_x = 500;
+    while (temp_x > 0)
+    {
+        temp_x = temp_x - 1;
     }
-    return (uint8_t)(UART1_DR_R & 0xFF);
+    sw1 = GPIO_PORTF_DATA_R & 0x10;
+    sw2 = GPIO_PORTF_DATA_R & 0x01;
+    if (sw1 == 0 && sw2 != 0)
+    {
+        UART5_Transmitter(0xF0);
+    }
+    if (sw1 != 0 && sw2 == 0)
+    {
+        UART5_Transmitter(0xAA);
+    }
+    GPIO_PORTF_ICR_R = 0x11;
 }
 
-void setLED(uint8_t color) {
-    GPIO_PORTF_DATA_R &= ~(RED_LED | BLUE_LED | GREEN_LED);
-    GPIO_PORTF_DATA_R |= color;
-}
+int main(void)
+{
+    SYSCTL_RCGCUART_R |= 0x20; /* enable clock to UART5 */
+    SYSCTL_RCGCGPIO_R |= 0x10; /* enable clock to PORTE for PE4/Rx and PE5/Tx */
+    Delay(1);
 
-int main(void) {
-    initGPIO();
-    initUART1();
+    /* UART5 initialization */
+    UART5_CTL_R = 0;     /* disable UART5 */
+    UART5_IBRD_R = 104;  /* for 9600 baud rate, integer part = 104 */
+    UART5_FBRD_R = 11;   /* for 9600 baud rate, fractional part = 11 */
+    UART5_CC_R = 0;      /* use system clock */
+    UART5_LCRH_R = 0x62; /* data length 8-bit, no parity, no FIFO */
+    UART5_CTL_R = 0x301; /* enable UART5, Rx and Tx */
 
-    while (1) {
-        if ((GPIO_PORTF_DATA_R & SW1) == 0) {
-            UART1_Send(0xF0);
-        } else if ((GPIO_PORTF_DATA_R & SW2) == 0) {
-            UART1_Send(0xAA);
+    /* UART5 Tx (PE5) and Rx (PE4) configuration */
+    GPIO_PORTE_DEN_R = 0x30;        /* enable digital for PE4 and PE5 */
+    GPIO_PORTE_AFSEL_R = 0x30;      /* enable alternate function for PE4 and PE5 */
+    GPIO_PORTE_AMSEL_R = 0;         /* disable analog function for PE4 and PE5 */
+    GPIO_PORTE_PCTL_R = 0x00110000; /* configure PE4 and PE5 for UART5 */
+
+    SYSCTL_RCGC2_R |= 0x00000020;   /* enable clock to GPIOF */
+    GPIO_PORTF_LOCK_R = 0x4C4F434B; /* unlock commit register */
+    GPIO_PORTF_CR_R = 0x1F;         /* make PORTF0 configurable */
+    GPIO_PORTF_DEN_R = 0x1F;        /* set PORTF pins 4 pin */
+    GPIO_PORTF_DIR_R = 0x0E;        /* set PORTF4 pin as input user switch pin */
+    GPIO_PORTF_PUR_R = 0x11;        /* PORTF4 is pulled up */
+    GPIO_PORTF_IS_R = 0x00;         // Edge-sensitive interrupts
+    GPIO_PORTF_IBE_R = 0x00;        // Interrupt on single edge
+    GPIO_PORTF_IEV_R = 0x00;        // Falling edge triggers interrupt
+    GPIO_PORTF_IM_R = 0x11;         // Unmask interrupts for PF4 and PF0
+    NVIC_EN0_R = 0x40000000;        // Enable IRQ30 (GPIO Port F interrupt)
+    Delay(1);
+    int v = UART5_DR_R;
+    while (1)
+    {
+        int rx;
+
+        rx = UART5_Receiver();
+
+        if ((UART5_RSR_R & (1 << 1)) != 0 && start > 1)
+        {
+            GPIO_PORTF_DATA_R = 0x02;
         }
-        uint8_t receivedData = UART1_Receive();
-
-        if (receivedData == 0xF0) {
-            setLED(BLUE_LED);
-        } else if (receivedData == 0xAA) {
-            setLED(GREEN_LED);
-        } else if (receivedData == 0xFF) {
-            setLED(RED_LED);
+        else if (rx == 0xAA)
+        {
+            GPIO_PORTF_DATA_R = 0x08;
         }
-
-        delayMs(100);
+        else if (rx == 0xF0)
+        {
+            GPIO_PORTF_DATA_R = 0x04;
+        }
     }
 }
 
-void delayMs(int n) {
-    int i, j;
-    for (i = 0; i < n; i++) {
-        for (j = 0; j < 3180; j++) {}
-    }
+void UART5_Transmitter(int data)
+{
+    while ((UART5_FR_R & (1 << 5)) != 0)
+        ;
+    UART5_DR_R = data;
+    check = check + 1;
+}
+
+int UART5_Receiver(void)
+{
+    int data;
+    while ((UART5_FR_R & (1 << 4)) != 0)
+        ;
+    data = UART5_DR_R;
+    start = start + 1;
+    return data;
+}
+void Delay(unsigned long counter)
+{
+    unsigned long i = 0;
+    for (i = 0; i < counter; i++)
+        ;
 }
